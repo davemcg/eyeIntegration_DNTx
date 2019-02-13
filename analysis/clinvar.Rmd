@@ -82,6 +82,11 @@ data <- left_join(data, tcons_mapping, by =c('dn_TX' = 'TCONS'))
 #data
 ```
 
+# Read in expression information
+```{r}
+load('/Volumes/data/projects/nei/mcgaughey/eyeIntegration_DNTx/data/salmon_tx_quant.Rdata')
+```
+
 # Quick Overview
 ```{r}
 data %>% skim()
