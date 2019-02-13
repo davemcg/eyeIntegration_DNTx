@@ -1,0 +1,165 @@
+---
+title: "ClinVar"
+output: html_notebook
+---
+
+# Read in ClinVar VCF
+I read in both the table and the vcf because:
+- The VCF is what I directly use for annotation (well almost, I add a Faux 0/1 genotype person)
+- The table has a bit more information like number of submitters
+```{r}
+library(data.table)
+library(tidyverse)
+library(here)
+data_path <- '/Volumes/data/projects/nei/mcgaughey/eyeIntegration_DNTx/data/clinvar/clinvar.vcf.gz'
+
+clinvar_vcf <- fread(paste('gzcat', data_path)) %>% mutate(ID = as.numeric(ID))
+clinvar_table <- read_tsv('~/git/eyeIntegration_DNTx/data/variant_summary.txt.gz')
+#clinvar_single <- fread(paste0('gzcat ', data_path, '/data/clinvar/clinvar_alleles.single.b37.tsv.gz'))
+
+
+clinvar_eye <- clinvar_table %>% 
+  filter(Assembly == 'GRCh37') %>% 
+  filter(!grepl('cardio|cancer|carci|lynch', ignore.case = T, PhenotypeIDS)) %>% 
+  filter(!grepl('cardio|cancer|carci|lynch', ignore.case = T, PhenotypeList)) %>% 
+  filter(grepl('stargardt|retina|leber|usher|cone-rod|rod-cone|macula|retinitis|eye|cornea', PhenotypeIDS, ignore.case = T) |
+           grepl('stargardt|retina|leber|usher|cone-rod|rod-cone|macula|retinitis|eye|cornea', PhenotypeList, ignore.case = T)) %>% 
+  left_join(., clinvar_vcf %>% select(POS, REF, ALT, ID), by = c('VariationID' = 'ID'))
+
+clinvar_eye %>% count(ClinicalSignificance) %>% arrange(-n)
+```
+
+# Read in our *de novo* GFF
+Need to get TCONS <-> oID:ENST\* or oID:MSTRG\* mapping.
+
+If maps to ENST then, the TCONS is an existing transcript
+
+If maps to MSTRG then this a *de novo* transcript
+```{r}
+gff <- read_tsv('/Volumes/data/projects/nei/mcgaughey/eyeIntegration_DNTx/data/stringtie_alltissues_cds_b37.sorted.gff3.gz', col_types = 'cccddcccc', col_names = F)
+tcons_mapping <- gff %>% 
+  filter(X3 == 'mRNA') %>% 
+  rowwise() %>% 
+  mutate(TCONS = gsub('ID=transcript:','', grep('ID\\=.*', str_split(X9, ';')[[1]], value = T)),
+         oId = gsub('oId=','', grep('oId\\=.*', str_split(X9, ';')[[1]], value = T))) %>% 
+  select(TCONS, oId) %>% 
+  unique()
+
+```
+
+# RetNet
+```{r}
+retnet <- read_tsv('~/git/variant_prioritization/data/retnet_hgncIDs_2017-03-28.txt', col_names = F, col_types = 'c')
+colnames(retnet) <- 'HGNC'
+```
+
+# Read in GEMINI annotated with standard GFF
+Left join clinvar vcf with standard tx annotation (~/git/variant_prioritization run with the gencode v29 liftover to b37 gff)
+```{r}
+standard <- read_tsv('/Volumes/data/projects/nei/mcgaughey/eyeIntegration_DNTx/data/clinvar/standardGFF/gemini_output.standard.tsv.gz', col_types = 'cddccccccdddc')
+data <- left_join(clinvar_eye %>% 
+                    select(Chromosome, POS, REF, ALT, ClinicalSignificance, ClinSigSimple, `RS# (dbSNP)`, PhenotypeList, PhenotypeIDS, ReviewStatus, NumberSubmitters, OtherIDs), 
+                  standard %>% mutate(start = start + 1), 
+                  by = c("Chromosome" = "chrom", "POS" = "start", "REF" = "ref", "ALT" = "alt")) %>% 
+  select(Chromosome, POS, REF, ALT, `RS# (dbSNP)`, st_gene = gene, st_TX = transcript, 
+         PhenotypeList, ClinicalSignificance, ClinSigSimple, st_impact_severity = impact_severity, 
+         st_impact = impact, gno_af_all, cadd_phred, gerp, phylop_100way, ReviewStatus, NumberSubmitters, OtherIDs, PhenotypeIDS)
+```
+
+# Read in GEMINI annotated with our *de novo* GFF
+Left join data above with denovo annotation 
+```{r}
+denovo <- read_tsv('/Volumes/data/projects/nei/mcgaughey/eyeIntegration_DNTx/data/clinvar/denovoGFF/gemini_output.denovo.tsv.gz', col_types = 'cddccccccdddc')
+data <- left_join(data, denovo %>% 
+                    mutate(start = start + 1) %>% 
+                    select(chrom, start, alt, ref, dn_gene = gene, dn_TX = transcript, dn_impact_severity = impact_severity, dn_impact = impact), 
+                  by = c("Chromosome" = "chrom", "POS" = "start", "REF" = "ref", "ALT" = "alt")) 
+```
+
+# Left join in TCONS <-> ENST/MSTRG mapping
+```{r}
+data <- left_join(data, tcons_mapping, by =c('dn_TX' = 'TCONS'))
+#data
+```
+
+# Quick Overview
+```{r}
+data %>% skim()
+```
+
+# How many variants do we have?
+```{r}
+data %>% dim()
+```
+
+# How many variants differ between standard and *de novo* annotation?
+Also filter to ensure that the *de novo* transcript is actually *de novo* by checking
+whether the "oId" (old ID) is derived from stringtie with `MSTRG`
+```{r}
+data %>% filter(st_impact != dn_impact) %>% 
+  filter(grepl('MSTRG', oId)) %>% dim()
+```
+
+# How many of these are genes in retnet?
+```{r}
+data %>% 
+  filter(st_impact != dn_impact) %>%
+  filter(grepl('MSTRG', oId)) %>% 
+  filter(dn_gene %in% retnet$HGNC) %>% 
+  dim()
+```
+
+# What kinds of **new** impacts do we have?
+```{r}
+data %>% 
+  filter(st_impact != dn_impact) %>% 
+  filter(grepl('MSTRG', oId)) %>% 
+  filter(dn_gene %in% retnet$HGNC) %>% 
+  group_by(st_impact, dn_impact) %>% 
+  summarise(Count=n()) %>% 
+  arrange(-Count)
+```
+
+# What tissues are these new transcripts detected in?
+```{r}
+data %>% 
+  filter(st_impact_severity != dn_impact_severity) %>% 
+  filter(grepl('MSTRG', oId)) %>% 
+  mutate(Tissue = gsub('_MSTR.*','', oId)) %>% count(Tissue) %>% 
+  arrange(-n) %>% 
+  DT::datatable()
+```
+
+# Counts of synonymous -> missense changes
+```{r}
+data %>% 
+  filter(st_impact == 'synonymous_variant', dn_impact == 'missense_variant') %>% 
+  filter(grepl('MSTRG', oId)) %>% 
+  pull(st_gene) %>% 
+  table() %>% enframe() %>% arrange(-value)
+```
+
+
+# Let's try to narrow down to the most interesting ones
+- gnomAD AF < 0.001
+- phylop_100way > 1 (more conserved)
+```{r}
+data %>% 
+  filter(st_impact != dn_impact,
+         grepl('MSTRG', oId),
+         gno_af_all < 0.001) %>% 
+  filter(dn_impact_severity %in% c('MED','HIGH')) %>% 
+  select(Chromosome:ClinicalSignificance, st_impact, dn_impact, gno_af_all:phylop_100way, oId) %>% 
+  arrange(Chromosome, POS) %>% 
+DT::datatable()
+```
+
+# RAX2
+```{r}
+data %>% 
+  filter(st_impact_severity != dn_impact_severity) %>% 
+  filter(grepl('MSTRG', oId)) %>% 
+  filter(grepl('rax', ignore.case = T, st_gene)) %>% 
+  DT::datatable()
+```
+
