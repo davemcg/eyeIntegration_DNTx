@@ -1,0 +1,79 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+
+Try executing this chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Cmd+Shift+Enter*. 
+
+```{r}
+library(Gviz)
+library(rtracklayer)
+library(GenomicFeatures)
+library(tidyverse)
+library(pool)
+library(RSQLite)
+
+DNTx_pool_2019 <- dbPool(drv = SQLite(), dbname = "/Volumes/ARC168/eyeIntegration_app/www/2019/DNTx_EiaD_human_expression_2019_00.sqlite", idleTimeout = 3600000)
+core_tight_2019 <- DNTx_pool_2019 %>% tbl('metadata') %>% as_tibble()
+retina <- core_tight_2019 %>% filter(Tissue == 'Retina') %>% pull(sample_accession)
+retina_BW <- paste0('/Volumes/ARC168/PROJECTS/mcgaughey/eyeIntegration_DNTx/bigwigs/', retina, '.bw')
+all_bw <- list.files('/Volumes/ARC168/PROJECTS/mcgaughey/eyeIntegration_DNTx/bigwigs/', pattern = '*bw')
+chr <- 'chr7'
+gen <- 'hg38'
+itrack <- IdeogramTrack(genome = gen, chromosome = chr)
+
+gtf <- import.gff('/Volumes/ARC168/PROJECTS/mcgaughey/eyeIntegration_DNTx/de_novo_transcriptome_processed.gtf.gz', format = 'gtf')
+txdb <- makeTxDbFromGFF('/Volumes/ARC168/PROJECTS/mcgaughey/eyeIntegration_DNTx/de_novo_transcriptome_processed.gtf.gz', format = 'gtf')
+geneTrack <- GeneRegionTrack(txdb, name = 'DNTx v00')#, chromosome="chr7", from=5527151, to=5563784, name = 'DNTx')
+plotTracks(geneTrack, chromosome="chr7", from=5527151, to=5563784, showId=TRUE)
+
+retina_DT_list <- list()
+for (i in retina_BW[60:70]){
+  retina_DT_list[[i]] <- DataTrack(import.bw(i),
+                                type = 's', 
+                                name = 'Retina')
+  displayPars(retina_DT_list[[i]]) <- list(alpha.title = 1, alpha = 0.5)
+}
+
+
+
+
+
+set.seed(235)
+samples <- core_tight_2019 %>% 
+  filter(Kept == 'Kept') %>% 
+  mutate(Class = case_when(grepl('Adipose|Adrenal|Blood|Breast|Colon|Esopha|Heart|Kidney|Liver|Lung|Muscle|Nerve|Pancre|Pitui|Salivar|Skin|Small|Spleen|Stomach|Thyroid', Tissue) ~ 'Non-neuronal', 
+                           TRUE ~ Tissue)) %>% 
+  group_by(Class) %>% 
+  sample_n(10, replace = TRUE) %>% 
+  pull(sample_accession) %>% 
+  unique()
+                                                                 
+existing_samples <- grep(paste0(samples, '.bw', collapse = '|'), all_bw, value = T) %>% unique()
+
+all_bw_files <- paste0('/Volumes/ARC168/PROJECTS/mcgaughey/eyeIntegration_DNTx/bigwigs/',existing_samples)
+allBW_list <- list()
+for (i in all_bw_files){
+  file <- gsub(".*bigwigs/","", i) %>% gsub('.bw','',.) 
+  print(file)
+  allBW_list[[file]] <- DataTrack(import.bw(i),
+                                type = 's',
+                                name = 'RNA-Seq Read Depth')
+  displayPars(allBW_list[[file]]) <- list(alpha.title = 1, alpha = 0.5)
+}
+#retina_DT_list[['DNTx']] <- geneTrack
+groups <- core_tight_2019 %>% 
+    filter(Kept == 'Kept', sample_accession %in% (gsub(".*bigwigs/","", existing_samples) %>% gsub('.bw','',.))) %>% 
+    mutate(Class = case_when(grepl('Adipose|Adrenal|Blood|Breast|Colon|Esopha|Heart|Kidney|Liver|Lung|Muscle|Nerve|Pancre|Pitui|Salivar|Skin|Small|Spleen|Stomach|Thyroid', Tissue) ~ 'Non-neuronal', 
+                             TRUE ~ Tissue)) %>% dplyr::select(sample_accession, Class) %>% unique() %>% pull(Class)
+plotTracks(allBW_list[c(1,2,3)], chromosome="chr10", from=84240053, to=84264960, showId=TRUE, groups = groups[1:5])
+```
+
+Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Cmd+Option+I*.
+
+When you save the notebook, an HTML file containing the code and output will be saved alongside it (click the *Preview* button or press *Cmd+Shift+K* to preview the HTML file). 
+
+The preview shows you a rendered HTML copy of the contents of the editor. Consequently, unlike *Knit*, *Preview* does not run any R code chunks. Instead, the output of the chunk when it was last run in the editor is displayed.
+
