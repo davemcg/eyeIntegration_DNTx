@@ -15,45 +15,36 @@ library(tidyverse)
 library(pool)
 library(RSQLite)
 
-DNTx_pool_2019 <- dbPool(drv = SQLite(), dbname = "/Volumes/ARC168/eyeIntegration_app/www/2019/DNTx_EiaD_human_expression_2019_00.sqlite", idleTimeout = 3600000)
+#DNTx_pool_2019 <- dbPool(drv = SQLite(), dbname = #"/Volumes/ARC168/eyeIntegration_app/www/2019/DNTx_EiaD_human_expression_2019_00.sqlite", idleTimeout = 3600000)
+
+DNTx_pool_2019 <- dbPool(drv = SQLite(), dbname = "/Volumes/McGaughey_S/eyeIntegration_app/www/2019/EiaD_human_expression_2019_03.sqlite", idleTimeout = 3600000)
+
 core_tight_2019 <- DNTx_pool_2019 %>% tbl('metadata') %>% as_tibble()
 retina <- core_tight_2019 %>% filter(Tissue == 'Retina') %>% pull(sample_accession)
-retina_BW <- paste0('/Volumes/ARC168/PROJECTS/mcgaughey/eyeIntegration_DNTx/bigwigs/', retina, '.bw')
-all_bw <- list.files('/Volumes/ARC168/PROJECTS/mcgaughey/eyeIntegration_DNTx/bigwigs/', pattern = '*bw')
+retina_BW <- paste0('/Volumes/McGaughey_S/eyeIntegration_DNTx/bigwigs/', retina, '.bw')
+all_bw <- list.files('/Volumes/McGaughey_S/eyeIntegration_DNTx/bigwigs/', pattern = '*bw')
 chr <- 'chr7'
 gen <- 'hg38'
 itrack <- IdeogramTrack(genome = gen, chromosome = chr)
 
-gtf <- import.gff('/Volumes/ARC168/PROJECTS/mcgaughey/eyeIntegration_DNTx/de_novo_transcriptome_processed.gtf.gz', format = 'gtf')
-txdb <- makeTxDbFromGFF('/Volumes/ARC168/PROJECTS/mcgaughey/eyeIntegration_DNTx/de_novo_transcriptome_processed.gtf.gz', format = 'gtf')
+gtf <- import.gff('/Volumes/McGaughey_S/eyeIntegration_DNTx/de_novo_transcriptome_processed.gtf.gz', format = 'gtf')
+txdb <- makeTxDbFromGFF('/Volumes/McGaughey_S/eyeIntegration_DNTx/de_novo_transcriptome_processed.gtf.gz', format = 'gtf')
 geneTrack <- GeneRegionTrack(txdb, name = 'DNTx v00')#, chromosome="chr7", from=5527151, to=5563784, name = 'DNTx')
 plotTracks(geneTrack, chromosome="chr7", from=5527151, to=5563784, showId=TRUE)
 
-retina_DT_list <- list()
-for (i in retina_BW[60:70]){
-  retina_DT_list[[i]] <- DataTrack(import.bw(i),
-                                type = 's', 
-                                name = 'Retina')
-  displayPars(retina_DT_list[[i]]) <- list(alpha.title = 1, alpha = 0.5)
-}
-
-
-
-
-
 set.seed(235)
-samples <- core_tight_2019 %>% 
+core_tight_2019  <-  core_tight_2019 %>% 
   filter(Kept == 'Kept') %>% 
   mutate(Class = case_when(grepl('Adipose|Adrenal|Blood|Breast|Colon|Esopha|Heart|Kidney|Liver|Lung|Muscle|Nerve|Pancre|Pitui|Salivar|Skin|Small|Spleen|Stomach|Thyroid', Tissue) ~ 'Non-neuronal', 
-                           TRUE ~ Tissue)) %>% 
-  group_by(Class) %>% 
-  sample_n(10, replace = TRUE) %>% 
+                           TRUE ~ Tissue)) 
+samples <- core_tight_2019 %>%   group_by(Class) %>% 
+  sample_n(20, replace = TRUE) %>% 
   pull(sample_accession) %>% 
   unique()
                                                                  
 existing_samples <- grep(paste0(samples, '.bw', collapse = '|'), all_bw, value = T) %>% unique()
 
-all_bw_files <- paste0('/Volumes/ARC168/PROJECTS/mcgaughey/eyeIntegration_DNTx/bigwigs/',existing_samples)
+all_bw_files <- paste0('/Volumes/McGaughey_S/eyeIntegration_DNTx/bigwigs/',existing_samples)
 allBW_list <- list()
 for (i in all_bw_files){
   file <- gsub(".*bigwigs/","", i) %>% gsub('.bw','',.) 
@@ -68,7 +59,30 @@ groups <- core_tight_2019 %>%
     filter(Kept == 'Kept', sample_accession %in% (gsub(".*bigwigs/","", existing_samples) %>% gsub('.bw','',.))) %>% 
     mutate(Class = case_when(grepl('Adipose|Adrenal|Blood|Breast|Colon|Esopha|Heart|Kidney|Liver|Lung|Muscle|Nerve|Pancre|Pitui|Salivar|Skin|Small|Spleen|Stomach|Thyroid', Tissue) ~ 'Non-neuronal', 
                              TRUE ~ Tissue)) %>% dplyr::select(sample_accession, Class) %>% unique() %>% pull(Class)
-plotTracks(allBW_list[c(1,2,3)], chromosome="chr10", from=84240053, to=84264960, showId=TRUE, groups = groups[1:5])
+plotTracks(allBW_list, chromosome="chr10", from=84240053, to=84264960, showId=TRUE)
+
+
+retina <- allBW_list[groups == 'Retina']
+retina[[1]]@name <- 'Retina'
+cornea <- allBW_list[groups == 'Cornea']
+cornea[[1]]@name <- 'Cornea'
+rpe <- allBW_list[groups == 'RPE']
+rpe[[1]]@name <- 'RPE'
+esc <- allBW_list[groups == 'ESC']
+esc[[1]]@name <- 'ESC'
+non_neuronal <- allBW_list[groups == 'Non-neuronal']
+non_neuronal[[1]]@name <- 'Non-neuronal'
+brain <- allBW_list[groups == 'Brain']
+brain[[1]]@name <- 'Brain'
+
+
+plotTracks(list(geneTrack, 
+                OverlayTrack(retina), 
+                #OverlayTrack(cornea), 
+                OverlayTrack(rpe),
+                OverlayTrack(esc),
+                OverlayTrack(brain),
+                OverlayTrack(non_neuronal)), chromosome="chr10", from=84240053, to=84265960, showId=TRUE)
 ```
 
 Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Cmd+Option+I*.
