@@ -14,7 +14,25 @@ library(GenomicFeatures)
 library(tidyverse)
 library(pool)
 library(RSQLite)
-
+# function to find samples with only one region (they don't print with plotTracks())
+# returns new list with bad sample removed
+remove_bad_sample <- function(data_track_list, seqnames, start, end){
+  bad_sample <- c()
+  for (i in seq(1,length(names(data_track_list)))){
+    if ((data_track_list[[i]]@range %>% 
+         data.frame() %>% 
+         rownames_to_column('index') %>% 
+         filter(seqnames == !!seqnames, start >= !!start, end <= !!end) %>% 
+         nrow()) == 1){
+      bad_sample <- c(bad_sample, i)
+    } 
+  }
+  if (length(bad_sample > 0)){
+    data_track_list[-c(bad_sample)]
+  } else {data_track_list}
+}
+```
+```{r}
 #DNTx_pool_2019 <- dbPool(drv = SQLite(), dbname = #"/Volumes/ARC168/eyeIntegration_app/www/2019/DNTx_EiaD_human_expression_2019_00.sqlite", idleTimeout = 3600000)
 
 DNTx_pool_2019 <- dbPool(drv = SQLite(), dbname = "/Volumes/McGaughey_S/eyeIntegration_app/www/2019/EiaD_human_expression_2019_03.sqlite", idleTimeout = 3600000)
@@ -41,7 +59,7 @@ samples <- core_tight_2019 %>%   group_by(Class) %>%
   sample_n(20, replace = TRUE) %>% 
   pull(sample_accession) %>% 
   unique()
-                                                                 
+
 existing_samples <- grep(paste0(samples, '.bw', collapse = '|'), all_bw, value = T) %>% unique()
 
 all_bw_files <- paste0('/Volumes/McGaughey_S/eyeIntegration_DNTx/bigwigs/',existing_samples)
@@ -50,44 +68,44 @@ for (i in all_bw_files){
   file <- gsub(".*bigwigs/","", i) %>% gsub('.bw','',.) 
   print(file)
   allBW_list[[file]] <- DataTrack(import.bw(i),
-                                type = 's',
-                                name = 'RNA-Seq Read Depth')
-  displayPars(allBW_list[[file]]) <- list(alpha.title = 1, alpha = 0.5)
+                                  type = 'l',
+                                  name = 'RNA-Seq Read Depth')
+  displayPars(allBW_list[[file]]) <- list(alpha.title = 1, alpha = 0.7)
 }
+
+working_list <- remove_bad_sample(allBW_list, 'chr10', 84240053, 84265960)
 #retina_DT_list[['DNTx']] <- geneTrack
 groups <- core_tight_2019 %>% 
-    filter(Kept == 'Kept', sample_accession %in% (gsub(".*bigwigs/","", existing_samples) %>% gsub('.bw','',.))) %>% 
-    mutate(Class = case_when(grepl('Adipose|Adrenal|Blood|Breast|Colon|Esopha|Heart|Kidney|Liver|Lung|Muscle|Nerve|Pancre|Pitui|Salivar|Skin|Small|Spleen|Stomach|Thyroid', Tissue) ~ 'Non-neuronal', 
-                             TRUE ~ Tissue)) %>% dplyr::select(sample_accession, Class) %>% unique() %>% pull(Class)
-plotTracks(allBW_list, chromosome="chr10", from=84240053, to=84264960, showId=TRUE)
+  filter(Kept == 'Kept', sample_accession %in% (gsub(".*bigwigs/","", existing_samples) %>% gsub('.bw','',.))) %>% 
+  mutate(Class = case_when(grepl('Adipose|Adrenal|Blood|Breast|Colon|Esopha|Heart|Kidney|Liver|Lung|Muscle|Nerve|Pancre|Pitui|Salivar|Skin|Small|Spleen|Stomach|Thyroid', Tissue) ~ 'Non-neuronal', 
+                           TRUE ~ Tissue)) %>% dplyr::select(sample_accession, Class) %>% unique() %>% pull(Class)
+#plotTracks(allBW_list, chromosome="chr10", from=84240053, to=84264960, showId=TRUE)
 
 
-retina <- allBW_list[groups == 'Retina']
+retina <- working_list[groups == 'Retina']
 retina[[1]]@name <- 'Retina'
-cornea <- allBW_list[groups == 'Cornea']
+cornea <- working_list[groups == 'Cornea']
 cornea[[1]]@name <- 'Cornea'
-rpe <- allBW_list[groups == 'RPE']
+rpe <- working_list[groups == 'RPE']
 rpe[[1]]@name <- 'RPE'
-esc <- allBW_list[groups == 'ESC']
+esc <- working_list[groups == 'ESC']
 esc[[1]]@name <- 'ESC'
-non_neuronal <- allBW_list[groups == 'Non-neuronal']
+non_neuronal <- working_list[groups == 'Non-neuronal']
 non_neuronal[[1]]@name <- 'Non-neuronal'
-brain <- allBW_list[groups == 'Brain']
+brain <- working_list[groups == 'Brain']
 brain[[1]]@name <- 'Brain'
 
 
 plotTracks(list(geneTrack, 
                 OverlayTrack(retina), 
-                #OverlayTrack(cornea), 
-                OverlayTrack(rpe),
-                OverlayTrack(esc),
-                OverlayTrack(brain),
-                OverlayTrack(non_neuronal)), chromosome="chr10", from=84240053, to=84265960, showId=TRUE)
+                OverlayTrack(cornea), 
+                OverlayTrack(rpe), 
+                OverlayTrack(esc), 
+                OverlayTrack(cornea), 
+                OverlayTrack(non_neuronal)), 
+           chromosome="chr10", from=84240053, to=84265960, showId=TRUE)
+
+
+
 ```
-
-Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Cmd+Option+I*.
-
-When you save the notebook, an HTML file containing the code and output will be saved alongside it (click the *Preview* button or press *Cmd+Shift+K* to preview the HTML file). 
-
-The preview shows you a rendered HTML copy of the contents of the editor. Consequently, unlike *Knit*, *Preview* does not run any R code chunks. Instead, the output of the chunk when it was last run in the editor is displayed.
 
