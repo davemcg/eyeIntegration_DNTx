@@ -1,0 +1,105 @@
+---
+title: "Improvement in Mapping Rate in DNTx compared against Gencode v29"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output: 
+  html_notebook:
+    theme: united
+    toc: true
+    toc_float: true
+---
+
+# Load Data
+```{r}
+library(pool)
+library(tidyverse)
+library(RSQLite)
+
+gene_pool_2019 <- dbPool(drv = SQLite(), dbname = "/Volumes/ARC168/PROJECTS/mcgaughey/eyeIntegration_DNTx/EiaD_human_expression_2019_09.sqlite", idleTimeout = 3600000)
+core_tight_2019 <- gene_pool_2019 %>% tbl('metadata') %>% as_tibble()
+core_tight_2019$sample_accession<-gsub('E-MTAB-','E.MTAB.',core_tight_2019$sample_accession)
+core_tight_2019$Sub_Tissue <- gsub('_',' - ',core_tight_2019$Sub_Tissue)
+core_tight_2019 <- core_tight_2019 %>% select(-mapping_rate) %>% filter(!Tissue %in% c('Choroid Plexus','EyeLid'), !Sub_Tissue == 'Cornea - Stroma', !grepl("MGS", Sub_Tissue))
+
+
+# fix tissue <-> color
+meta <- 'core_tight_2019'
+tissue_val <- setNames(c(pals::glasbey(n = 32), pals::kelly(n = get(meta) %>% pull(Tissue) %>% unique() %>% length() - 32)) %>% colorspace::lighten(0.3), get(meta) %>% pull(Tissue) %>% unique() %>% sort())
+tissue_col <- scale_colour_manual(values = tissue_val)
+tissue_fill <- scale_fill_manual(values = tissue_val)
+
+# mapping rates
+gencode <- read_delim('~/git/eyeIntegration_DNTx/data/mapping_rate_EiaD_2019_05.txt', 
+                      col_names = c('sample_accession', 'mapping_rate'), 
+                      delim = ' ') %>% 
+  mutate(sample_accession = gsub('-', '.', sample_accession),
+         mapping_rate = gsub('%','', mapping_rate) %>% as.numeric()) 
+DNTx <- read_delim('~/git/eyeIntegration_DNTx/data/mapping_rates_EiaD_2019_09_DNTx_txome.txt', 
+                   col_names = c('sample_accession', 'mapping_rate'), 
+                   delim = ' ') %>% 
+  mutate(sample_accession = gsub('-', '.', sample_accession),
+         mapping_rate = gsub('%','', mapping_rate) %>% as.numeric()) 
+```
+
+# Mapping
+Compare mapping rates against Gencode v29
+
+## Distributions
+Facetted by tissue, showing each Sub Tissue
+
+We see a consistent improvement in mapping rate with DNTx
+```{r, fig.width=20, fig.height=20}
+bind_rows(core_tight_2019 %>% left_join(., gencode, by = 'sample_accession') %>% 
+            mutate(fasta = 'Gencode v29'), 
+          core_tight_2019 %>% left_join(., DNTx, by = 'sample_accession') %>% 
+            mutate(fasta = 'DNTx 2019 09')) %>% 
+  ggplot(aes(x=Sub_Tissue, y = mapping_rate, colour = fasta)) + 
+  geom_violin(draw_quantiles = c(0.5)) + facet_wrap(~Tissue, scales = 'free_x') + 
+  ggsci::scale_color_aaas() +
+  theme_minimal() +
+  theme(axis.text.x=element_text(angle = 90, vjust = 0.5)) 
+
+```
+
+## Delta Mean
+Now let's simplify the visualization by cmoparing the DELTA mean (or median) between Sub_Tissues
+```{r, fig.width=10, fig.height=10}
+bind_rows(core_tight_2019 %>% left_join(., gencode, by = 'sample_accession') %>% 
+            mutate(fasta = 'Gencode v29'), 
+          core_tight_2019 %>% left_join(., DNTx, by = 'sample_accession') %>% 
+            mutate(fasta = 'DNTx 2019 09')) %>% 
+  group_by(Sub_Tissue, fasta) %>% 
+  summarise(mean = mean(mapping_rate)) %>% 
+  spread(fasta, mean) %>% 
+  mutate(Delta = `DNTx 2019 09` - `Gencode v29`) %>% 
+  left_join(., core_tight_2019 %>% select(Tissue, Sub_Tissue) %>% unique()) %>% 
+  ggplot(aes(x=Sub_Tissue, y = Delta)) + geom_bar(stat = 'identity') +
+  facet_wrap(~Tissue, scales = 'free_x') +
+  theme_minimal() +
+  theme(axis.text.x=element_text(angle = 90, vjust = 0.5)) 
+```
+
+## Delta Mean, no facetting, ordered by delta mean
+Now let's simplify the visualization by cmoparing the DELTA mean (or median) between Sub_Tissues
+```{r, fig.width=3, fig.height=4}
+bind_rows(core_tight_2019 %>% left_join(., gencode, by = 'sample_accession') %>% 
+            mutate(fasta = 'Gencode v29'), 
+          core_tight_2019 %>% left_join(., DNTx, by = 'sample_accession') %>% 
+            mutate(fasta = 'DNTx 2019 09')) %>% 
+  group_by(Sub_Tissue, fasta) %>% 
+  summarise(mean = mean(mapping_rate)) %>% 
+  spread(fasta, mean) %>% 
+  mutate(Delta = `DNTx 2019 09` - `Gencode v29`) %>% 
+  left_join(., core_tight_2019 %>% select(Tissue, Sub_Tissue) %>% unique()) %>% 
+  mutate(Group = case_when(Tissue %in% c('Cornea', 'ESC', 'EyeLid', 'Lens', 'Retina', 'Retinal Endothelium', 'RPE', 'Choroid Plexus') ~ 'Ocular',
+                           TRUE ~ 'Body')) %>% 
+  ggplot(aes(x=reorder(Sub_Tissue, Delta), y = Delta, fill = Group)) + geom_bar(stat = 'identity') +
+  theme_minimal() +
+  coord_flip() +
+  ggsci::scale_fill_aaas() +
+  xlab('EiaD Tissues') + ylab("Improvement in Mean Mapping\nPercentage Between Gencode V29 and DNTx V01")
+```
+
+
+```{r}
+devtools::session_info()
+```
