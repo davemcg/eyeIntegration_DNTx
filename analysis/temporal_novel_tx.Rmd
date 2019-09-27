@@ -1,0 +1,180 @@
+---
+title: "Temporal Dynamic Expression of Novel Transcripts Fetal Retina"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output: 
+  html_notebook:
+    theme: united
+    toc: true
+    toc_float: true
+---
+
+# Load Data
+
+The sqlite DB is on b2:/data/OGVFB_BG/EiaD_2019_09_DNTx/results/
+```{r}
+library(pool)
+library(tidyverse)
+library(RSQLite)
+library(ComplexHeatmap)
+library(circlize)
+library(viridis)
+library(pals)
+
+#gene_pool_2019 <- dbPool(drv = SQLite(), dbname = "/Volumes/ARC168/PROJECTS/mcgaughey/eyeIntegration_DNTx/EiaD_human_expression_2019_09.sqlite", idleTimeout = 3600000)
+gene_pool_2019 <- dbPool(drv = SQLite(), dbname = "~/Desktop/EiaD_human_expression_2019_09.sqlite", idleTimeout = 3600000)
+
+core_tight_2019 <- gene_pool_2019 %>% tbl('metadata') %>% as_tibble()
+core_tight_2019$sample_accession<-gsub('E-MTAB-','E.MTAB.',core_tight_2019$sample_accession)
+core_tight_2019$Sub_Tissue <- gsub('_',' - ',core_tight_2019$Sub_Tissue)
+core_tight_2019 <- core_tight_2019 %>% select(-mapping_rate) %>% filter(!Tissue %in% c('Choroid Plexus','EyeLid'), !Sub_Tissue == 'Cornea - Stroma', !grepl("MGS", Sub_Tissue))
+
+
+# fix tissue <-> color
+meta <- 'core_tight_2019'
+tissue_val <- setNames(c(pals::glasbey(n = 32), pals::kelly(n = get(meta) %>% pull(Tissue) %>% unique() %>% length() - 32)) %>% colorspace::lighten(0.3), get(meta) %>% pull(Tissue) %>% unique() %>% sort())
+tissue_col <- scale_colour_manual(values = tissue_val)
+tissue_fill <- scale_fill_manual(values = tissue_val)
+
+# vinay novel tx in fetal retina
+load('../data/fetal_retina_tx.Rdata')
+```
+
+# Filter TX down to ones with fairly high expression in Fetal Retina
+```{r}
+early_retina_samples <- core_tight_2019 %>% filter(Sub_Tissue %in% c('Retina - 3D Organoid Stem Cell', 'Retina - Fetal Tissue')) %>% pull(sample_accession)
+nl <- gene_pool_2019 %>% tbl('tx_IDs') %>% as_tibble() %>% mutate(TCONS = gsub('.* \\(|\\)', '', ID)) %>% filter(TCONS %in% Fetal_Retina_Novel_loci) %>% pull(ID)
+st <- gene_pool_2019 %>% tbl('tx_IDs') %>% as_tibble() %>% mutate(TCONS = gsub('.* \\(|\\)', '', ID)) %>% filter(TCONS %in% Fetal_Retina_specific_transcripts) %>% pull(ID)
+
+nl_expression <- gene_pool_2019 %>% tbl('lsTPM_tx')  %>% filter(ID %in% nl, sample_accession %in% early_retina_samples) %>% as_tibble()
+st_expression <- gene_pool_2019 %>% tbl('lsTPM_tx')  %>% filter(ID %in% st, sample_accession %in% early_retina_samples) %>% as_tibble()
+
+# only keep with log2(TPM + 1) > 5
+nl_retained <- nl_expression %>% group_by(ID) %>% mutate(l2 = log2(value + 1)) %>% filter(l2 > 5) %>% pull(ID) %>% unique()
+st_retained <- st_expression %>% group_by(ID) %>% mutate(l2 = log2(value + 1)) %>% filter(l2 > 5) %>% pull(ID) %>% unique()
+```
+
+# Which of these are differentially expressed in both Fetal Retina vs Synthetic and Fetal Retina vs Adult Retina
+## Novel Loci
+```{r, fig.width = 10, fig.height = 20}
+higher_than_body <- gene_pool_2019 %>% tbl('limma_DE_tx') %>% filter(Comparison == 'Retina_Fetal.Tissue-Body', ID %in% nl_retained, adj.P.Val < 0.01, logFC > 2) %>% pull(ID)
+higher_than_adult_retina <- gene_pool_2019 %>% tbl('limma_DE_tx') %>% filter(Comparison == 'Retina_Adult.Tissue-Retina_Fetal.Tissue', ID %in% nl_retained, adj.P.Val < 0.01, logFC < 2) %>% pull(ID)
+
+gene <- higher_than_body[higher_than_body %in% higher_than_adult_retina]
+table <- 'lsTPM_tx'
+
+query = paste0('select * from ', table, ' where ID in ("',paste(gene, collapse='","'),'")')
+p <- dbGetQuery(gene_pool_2019, query) %>% left_join(.,core_tight_2019) %>% 
+  left_join(., gene_pool_2019 %>% tbl('gene_IDs') %>% as_tibble()) %>% 
+  as_tibble() %>% filter(Tissue %in% c('ESC','Retina'))
+
+make_heatmap <- function(title, 
+                         matrix, 
+                         breaks = c(0,5,10),
+                         cluster_row,
+                         show_row_names = FALSE,
+                         show_heatmap_legend = FALSE){
+  Heatmap(log2(matrix+1), 
+          cluster_columns = F,  
+          column_title = title,
+          cluster_rows = cluster_row,
+          col = colorRamp2(breaks = breaks, colors = viridis(length(breaks))),
+          rect_gp = gpar(col= "white"),
+          show_row_names = show_row_names,
+          name = 'log2(TPM+1)',
+          show_heatmap_legend = show_heatmap_legend,
+          clustering_distance_rows = "pearson", 
+          clustering_distance_columns = "euclidean")
+}
+
+plot <- function(p){
+  ESC <- p %>% 
+    filter(Tissue == 'ESC') %>% 
+    mutate(Days = 0, Type = 'ESC') %>% 
+    group_by(ID, Days) %>% 
+    summarise(value = mean(value)) %>% 
+    mutate(Days = as.integer(Days))
+  organoid_swaroop_GFP <- p %>% 
+    filter(Sub_Tissue == 'Retina - 3D Organoid Stem Cell', !grepl('GFP negative', sample_attribute), study_accession != 'SRP159246') %>% 
+    group_by(ID, Age_Days) %>% 
+    summarise(value = mean(value)) %>% 
+    mutate(Days = as.integer(Age_Days), Type = 'GFP+ 3D Organoid') %>% 
+    select(-Age_Days)
+  organoid_swaroop_GFPneg <-  p %>% 
+    filter(Sub_Tissue == 'Retina - 3D Organoid Stem Cell', grepl('GFP negative', sample_attribute), study_accession != 'SRP159246') %>% 
+    group_by(ID, Age_Days) %>% 
+    summarise(value = mean(value)) %>% 
+    mutate(Days = as.integer(Age_Days), Type = 'Kaewkhaw GFP- 3D Retina')%>% 
+    select(-Age_Days)
+  organoid_johnston <-  p %>% 
+    filter(study_accession == 'SRP159246') %>% 
+    group_by(ID, Age_Days) %>% 
+    summarise(value = mean(value)) %>% 
+    mutate(Days = as.integer(Age_Days), Type = 'Kaewkhaw GFP+ 3D Retina') %>% 
+    select(-Age_Days)
+  fetal_tissue <- p %>% 
+    filter(Sub_Tissue == 'Retina - Fetal Tissue') %>% 
+    group_by(ID, Age_Days) %>% 
+    summarise(value = mean(value)) %>% 
+    mutate(Days = as.integer(Age_Days), Type = 'Fetal Tissue') %>% 
+    select(-Age_Days)
+  adult_tissue <- p %>% 
+    filter(Sub_Tissue == 'Retina - Adult Tissue') %>% 
+    group_by(ID) %>% 
+    summarise(value = mean(value), Type = 'Adult Tissue') %>% 
+    mutate(Days = 1000) 
+  
+  # tissue
+  tissue <- bind_rows(fetal_tissue, adult_tissue)
+  matrix <- tissue %>% select(-Type) %>% spread(ID, value) %>% t()
+  colnames(matrix) <- matrix['Days',]
+  colnames(matrix)[ncol(matrix)] <- 'Adult'
+  matrix <- matrix[-1,]
+  
+  cluster_row <- TRUE
+  one <- make_heatmap('Retina Tissue', matrix, show_heatmap_legend = T, cluster_row = cluster_row)
+  
+  # swaroop GFP+
+  x <- rbind(organoid_swaroop_GFP, ESC)
+  y <- x %>% select(-Type) %>% spread(ID, value) %>% t()
+  colnames(y) <- y['Days',]
+  colnames(y)[1] <- 'ESC'
+  y <- y[-1,]
+  two <- make_heatmap(title = 'GFP+ 3D\nRetina\n(Kaewkhaw)', y, cluster_row = cluster_row)
+  
+  # swaroop GFP-
+  x <- rbind(organoid_swaroop_GFPneg, ESC)
+  y <- x %>% select(-Type) %>% spread(ID, value) %>% t()
+  colnames(y) <- y['Days',]
+  colnames(y)[1] <- 'ESC'
+  y <- y[-1,]
+  three <- make_heatmap('GFP- 3D\nRetina\n(Kaewkhaw)', y, show_row_names = T, cluster_row = cluster_row)
+  
+  # johnston
+  x <- rbind(organoid_johnston, ESC)
+  y <- x %>% select(-Type) %>% spread(ID, value) %>% t()
+  colnames(y) <- y['Days',]
+  colnames(y)[1] <- 'ESC'
+  y <- y[-1,]
+  four <- make_heatmap('3D Retina (Eldred)', y, cluster_row = cluster_row)
+  
+  one + four + two + three
+}
+plot(p)
+
+```
+
+## Specific Transcripts
+```{r, fig.width = 10, fig.height = 40}
+higher_than_body <- gene_pool_2019 %>% tbl('limma_DE_tx') %>% filter(Comparison == 'Retina_Fetal.Tissue-Body', ID %in% st_retained, adj.P.Val < 0.01, logFC > 2) %>% pull(ID)
+higher_than_adult_retina <- gene_pool_2019 %>% tbl('limma_DE_tx') %>% filter(Comparison == 'Retina_Adult.Tissue-Retina_Fetal.Tissue', ID %in% st_retained, adj.P.Val < 0.01, logFC < 2) %>% pull(ID)
+
+gene <- higher_than_body[higher_than_body %in% higher_than_adult_retina]
+table <- 'lsTPM_tx'
+
+query = paste0('select * from ', table, ' where ID in ("',paste(gene, collapse='","'),'")')
+p <- dbGetQuery(gene_pool_2019, query) %>% left_join(.,core_tight_2019) %>% 
+  left_join(., gene_pool_2019 %>% tbl('gene_IDs') %>% as_tibble()) %>% 
+  as_tibble() %>% filter(Tissue %in% c('ESC','Retina'))
+
+plot(p)
+```
